@@ -312,6 +312,7 @@ def HEB_Ez(x,y,z,xp1=0,xp2=1,yp1=0,yp2=0,current=1,conductivity=1,frequency=1):
     x,y,z are location of observation, either as scalars or arrays
     xp1,yp1,xp2,yp2 are locations of ends of bipole at surface
     Derived from Hohmann and Ward
+    Corroborated by Wait, 1951 and Inan, 1985
     '''
     k_squared = -1j*2*np.pi*frequency*mu0*conductivity
     k = np.sqrt(k_squared)
