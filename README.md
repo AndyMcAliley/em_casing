@@ -1,5 +1,5 @@
 # em_casing
- Compute electromagnetic fields in the presence of a vertical casing in a half space.
+ Compute electromagnetic fields in the presence of a vertical casing.
  
  halfspace.py has everything you need to compute current in a casing due to a horizontal grounded wire.
  

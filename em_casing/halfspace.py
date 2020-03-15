@@ -362,10 +362,14 @@ def form_b_analytic(wire_path_x,
                   conductivity=background_conductivity,
                   frequency=frequency)
 
-def form_b(*args,**kwargs):
+
+def form_b(*args,method='analytic',**kwargs):
     '''
     Wrapper,
     to be changed to point to different functions when desired
     '''
-    return form_b_analytic(*args,**kwargs)
+    if method=='analytic':
+        return form_b_analytic(*args,**kwargs)
+    else:
+        raise ValueError('method '+method+' not recognized')
 
