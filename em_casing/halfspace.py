@@ -6,8 +6,9 @@ functions:
 hankel_J1_140
 fii
 fij
-Aii
-Aij
+Zii
+Zij
+form_gamma_casing
 form_A
 HED_Ez
 HEB_Ez
@@ -175,7 +176,7 @@ def hankel_J1_140(function, r):
 
 def fii(lamda,z,dz,frequency,conductivity):
     '''
-    function in Hankel transform for Aii elements
+    function in Hankel transform for gamma_ii elements
     lamda is an array of lamda values
     z is vertical coord of center of ith segment
     dz is length of ith segment
@@ -191,7 +192,7 @@ def fii(lamda,z,dz,frequency,conductivity):
 
 def fij(lamda,zi,zj,dz,frequency,conductivity):
     '''
-    function in Hankel transform for Aij elements
+    function in Hankel transform for gamma_ij elements
     lamda is an array of lamda values
     zi is vertical coord of center of ith segment
     zj is vertical coord of center of jth segment
@@ -206,7 +207,22 @@ def fij(lamda,zi,zj,dz,frequency,conductivity):
     result *= lamda**2/s**2
     return result
 
-def Aii(zi,
+def Gii(zi,
+        dz,
+        frequency=0.125,
+        background_conductivity=0.18,
+        outer_radius=0.1095,
+        inner_radius=0.1095-0.0134):
+    '''
+    Form ith diagonal of integrated Green's matrix to solve for casing current densities
+    '''
+    funii = lambda x:fii(x,zi,dz,frequency,background_conductivity)
+    result = outer_radius*hankel_J1_140(funii,outer_radius)
+    result -= inner_radius*hankel_J1_140(funii,inner_radius)
+    result = -result/2/background_conductivity
+    return result
+
+def Zii(zi,
         dz,
         frequency=0.125,
         background_conductivity=0.18,
@@ -216,13 +232,48 @@ def Aii(zi,
     '''
     Form ith diagonal of coefficient matrix to solve for casing current densities
     '''
+    gamma_ii = Gii(zi,
+                   dz,
+                   frequency=frequency,
+                   background_conductivity=background_conductivity,
+                   outer_radius=outer_radius,
+                   inner_radius=inner_radius)
+    z_ii = 1/casing_conductivity - gamma_ii
+    return z_ii
+
+def Aii_old(zi,
+            dz,
+            frequency=0.125,
+            background_conductivity=0.18,
+            casing_conductivity=1.0e7,
+            outer_radius=0.1095,
+            inner_radius=0.1095-0.0134):
+    '''
+    Form ith diagonal of coefficient matrix to solve for casing current densities
+    '''
     funii = lambda x:fii(x,zi,dz,frequency,background_conductivity)
     result = outer_radius*hankel_J1_140(funii,outer_radius)
     result -= inner_radius*hankel_J1_140(funii,inner_radius)
     result = 1/casing_conductivity + result/2/background_conductivity
     return result
 
-def Aij(zi,
+def Gij(zi,
+        zj,
+        dz,
+        frequency=0.125,
+        background_conductivity=0.18,
+        outer_radius=0.1095,
+        inner_radius=0.1095-0.0134):
+    '''
+    Form i,jth element of coefficient matrix
+    '''
+    funij = lambda x:fij(x,zi,zj,dz,frequency,background_conductivity)
+    result = outer_radius*hankel_J1_140(funij,outer_radius)
+    result -= inner_radius*hankel_J1_140(funij,inner_radius)
+    result = -result/2/background_conductivity
+    return result
+
+def Zij(zi,
         zj,
         dz,
         frequency=0.125,
@@ -233,26 +284,46 @@ def Aij(zi,
     '''
     Form i,jth element of coefficient matrix
     '''
+    gamma_ij = Gij(zi,
+                   zj,
+                   dz,
+                   frequency=0.125,
+                   background_conductivity=0.18,
+                   outer_radius=0.1095,
+                   inner_radius=0.1095-0.0134)
+    z_ij = -gamma_ij
+    return z_ij
+
+def Aij_old(zi,
+            zj,
+            dz,
+            frequency=0.125,
+            background_conductivity=0.18,
+            casing_conductivity=1.0e7,
+            outer_radius=0.1095,
+            inner_radius=0.1095-0.0134):
+    '''
+    Form i,jth element of coefficient matrix
+    '''
     funij = lambda x:fij(x,zi,zj,dz,frequency,background_conductivity)
     result = outer_radius*hankel_J1_140(funij,outer_radius)
     result -= inner_radius*hankel_J1_140(funij,inner_radius)
     result /= 2*background_conductivity
     return result
 
-def form_A(frequency=0.125,
-          background_conductivity=0.18,
-          casing_conductivity=1.0e7,
-          outer_radius=0.1095,
-          inner_radius=0.1095-0.0134,
-          casing_length=1365,
-          num_segments=280,
-          **kwargs):
+def form_gamma_casing(frequency=0.125,
+                      background_conductivity=0.18,
+                      outer_radius=0.1095,
+                      inner_radius=0.1095-0.0134,
+                      casing_length=1365,
+                      num_segments=280,
+                      **kwargs):
     '''
-    Form coefficient matrix to solve for casing current densities
+    Form integrated Green's tensor matrix to solve for casing current densities
     '''
     dz = casing_length/num_segments
     zs = dz*(np.arange(num_segments)+0.5)
-    A = np.ones((num_segments,num_segments))*1j
+    G = np.ones((num_segments,num_segments))*1j
     diag = np.ones(num_segments)*1j
     #TODO: vectorize or parallelize
     for ii in np.arange(num_segments):
@@ -260,7 +331,49 @@ def form_A(frequency=0.125,
         for jj in np.arange(num_segments):
             zj = zs[jj]
             if ii==jj:
-                A[ii,jj] = Aii(zi,
+                G[ii,jj] = Gii(zi,
+                               dz,
+                               frequency=frequency,
+                               background_conductivity=background_conductivity,
+                               outer_radius=outer_radius,
+                               inner_radius=inner_radius
+                              )
+            else:
+                G[ii,jj] = Gij(zi,
+                               zj,
+                               dz,
+                               frequency=frequency,
+                               background_conductivity=background_conductivity,
+                               outer_radius=outer_radius,
+                               inner_radius=inner_radius
+                              )
+    return G   
+
+def form_A(frequency=0.125,
+           background_conductivity=0.18,
+           casing_conductivity=1.0e7,
+           outer_radius=0.1095,
+           inner_radius=0.1095-0.0134,
+           casing_length=1365,
+           num_segments=280,
+           **kwargs):
+    '''
+    Form coefficient matrix to solve for casing current densities
+    for a single casing
+
+    kwargs are unused
+    '''
+    dz = casing_length/num_segments
+    zs = dz*(np.arange(num_segments)+0.5)
+    Z = np.ones((num_segments,num_segments))*1j
+    diag = np.ones(num_segments)*1j
+    #TODO: vectorize or parallelize
+    for ii in np.arange(num_segments):
+        zi = zs[ii]
+        for jj in np.arange(num_segments):
+            zj = zs[jj]
+            if ii==jj:
+                Z[ii,jj] = Zii(zi,
                                dz,
                                frequency=frequency,
                                background_conductivity=background_conductivity,
@@ -269,7 +382,7 @@ def form_A(frequency=0.125,
                                inner_radius=inner_radius
                               )
             else:
-                A[ii,jj] = Aij(zi,
+                Z[ii,jj] = Zij(zi,
                                zj,
                                dz,
                                frequency=frequency,
@@ -278,11 +391,11 @@ def form_A(frequency=0.125,
                                outer_radius=outer_radius,
                                inner_radius=inner_radius
                               )
-    return A   
+    return Z   
 
-def HED_Ez(x,y,z,xp=0,yp=0,angle=0,moment=1,conductivity=1,frequency=1):
+def HED_Ez(x,y,z,xp=0,yp=0,angle=0,conductivity=1,frequency=1,moment=1):
     '''
-    z component of electric field due to a horizontal electric dipole
+    z component of electric field due to a horizontal electric dipole in halfspace
     x,y,z are location of observation, either as scalars or arrays
     xp,yp are location of dipole at surface
     angle is dipole direction in radians from x axis
@@ -308,7 +421,7 @@ def HED_Ez(x,y,z,xp=0,yp=0,angle=0,moment=1,conductivity=1,frequency=1):
 
 def HEB_Ez(x,y,z,xp1=0,xp2=1,yp1=0,yp2=0,current=1,conductivity=1,frequency=1):
     '''
-    z component of electric field due to a horizontal electric bipole
+    z component of electric field due to a horizontal electric bipole in halfspace
     x,y,z are location of observation, either as scalars or arrays
     xp1,yp1,xp2,yp2 are locations of ends of bipole at surface
     Derived from Hohmann and Ward
@@ -329,6 +442,84 @@ def HEB_Ez(x,y,z,xp1=0,xp2=1,yp1=0,yp2=0,current=1,conductivity=1,frequency=1):
     ez -= np.exp(-ikr1)/r1**3*(1+ikr1)
     # scaling factor
     ez *= current*z/2/np.pi/conductivity
+    return ez
+
+def VED_Ez(x,y,z,xp=0,yp=0,zp=0,conductivity=1,frequency=1,moment=1):
+    '''
+    z component of electric field due to a vertical electric dipole in halfspace
+    x,y,z are location of observation, either as scalars or arrays
+    xp,yp,zp are locations of ends of bipole at surface
+    Derived from Ward and Hohmann
+    '''
+    k_squared = -1j*2*np.pi*frequency*mu0*conductivity
+    drho = (x-xp)**2+(y-yp)**2
+    return _VED_Ez(drho,z,zp,k_squared,moment)
+
+def _VED_Ez(drho,z,zp=0,k_squared,moment=1):
+    '''
+    z component of electric field due to a vertical electric dipole in halfspace
+    Mostly, helper function for VEB_Ez to avoid recomputing k)
+    drho is horizontal distance from observation to dipole, as scalar or array
+    z is vertical location of observation, either as scalar or array
+    zp is vertical location of dipole
+    Derived from Ward and Hohmann
+    '''
+    z_true = z-zp
+    z_image = z+zp
+    Ez_true = _VED_Ez_wholespace(drho,z_true,k_squared)
+    Ez_image = _VED_Ez_wholespace(drho,z_image,k_squared)
+    return moment*(Ez_true-Ez_image)
+
+def _VED_Ez_wholespace(drho,dz,k_squared,moment=1):
+    '''
+    z component of electric field due to a vertical electric dipole in wholespace
+    Mostly, helper function for VED_Ez (i.e. structured to avoid recomputing k)
+    drho is horizontal distance from observation to dipole, as scalar or array
+    dz is vertical location from observation to dipole, either as scalar or array
+    k_squared = -i omega mu_0 sigma
+    Derived from Ward and Hohmann
+    '''
+    r_squared = drho**2+dz**2
+    kr_squared = k_squared*r_squared
+    ikr = 1j*np.sqrt(kr_squared)
+    r = np.sqrt(r_squared)
+
+    # make sure ez is complex
+    ez = 0j
+    # get that stuff in the parentheses
+    ez += kr_squared - ikr - 1
+    ez += dz**2/r_squared*(-kr_squared+3*ikr+3)
+    # distance and depth scaling
+    ez *= np.exp(-ikr)/r**3
+    # scaling factor
+    ez *= moment/4/np.pi/conductivity
+    return ez
+
+
+def VEB_Ez(x,y,z,xp=0,yp=0,zp=0,conductivity=1,frequency=1,moment=1):
+    '''
+    z component of electric field due to a vertical electric bipole
+    x,y,z are location of observation, either as scalars or arrays
+    xp,yp,zp are location of dipole
+    Derived from Hohmann and Ward
+    See Wait, 1952 for analytic integration in terms of 
+    generalized cosine and sine integrals.
+    '''
+    k_squared = -1j*2*np.pi*frequency*mu0*conductivity
+    r_squared = (x-xp)**2+(y-yp)**2+z**2
+    kr_squared = k_squared*r_squared
+    ikr = 1j*np.sqrt(kr_squared)
+    r = np.sqrt(r_squared)
+    # k = np.sqrt(k_squared)
+
+    # distance and depth scaling
+    ez = np.exp(-ikr)*z/r**5
+    # horizontal distance in the direction of the dipole
+    ez *= (x-xp)*np.cos(angle)+(y-yp)*np.sin(angle)
+    # unitless term in parenthesis
+    ez *= 3+3*ikr-kr_squared
+    # scaling factor
+    ez *= moment/2/np.pi/conductivity
     return ez
 
 def form_b_analytic(wire_path_x,
