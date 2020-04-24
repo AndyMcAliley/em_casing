@@ -15,6 +15,8 @@ HEB_Ez
 form_b_analytic
 form_b
 
+BEWARE: This module uses an e^(-iwt) convention for A, but an e^(iwt) convention for b.
+TODO: Use a consistent sign convention
 '''
 
 import numpy as np
@@ -320,12 +322,14 @@ def form_gamma_casing(frequency=0.125,
                       **kwargs):
     '''
     Form integrated Green's tensor matrix to solve for casing current densities
+
+    kwargs are unused
     '''
     dz = casing_length/num_segments
     zs = dz*(np.arange(num_segments)+0.5)
     G = np.ones((num_segments,num_segments))*1j
-    diag = np.ones(num_segments)*1j
     #TODO: vectorize or parallelize
+    #TODO: skip half of Gij computations (symmetry)
     for ii in np.arange(num_segments):
         zi = zs[ii]
         for jj in np.arange(num_segments):
@@ -347,7 +351,7 @@ def form_gamma_casing(frequency=0.125,
                                outer_radius=outer_radius,
                                inner_radius=inner_radius
                               )
-    return G   
+    return np.conj(G)
 
 def form_A(frequency=0.125,
            background_conductivity=0.18,
@@ -363,35 +367,42 @@ def form_A(frequency=0.125,
 
     kwargs are unused
     '''
-    dz = casing_length/num_segments
-    zs = dz*(np.arange(num_segments)+0.5)
-    Z = np.ones((num_segments,num_segments))*1j
-    diag = np.ones(num_segments)*1j
+    # dz = casing_length/num_segments
+    # zs = dz*(np.arange(num_segments)+0.5)
+    # Z = np.ones((num_segments,num_segments))*1j
     #TODO: vectorize or parallelize
-    for ii in np.arange(num_segments):
-        zi = zs[ii]
-        for jj in np.arange(num_segments):
-            zj = zs[jj]
-            if ii==jj:
-                Z[ii,jj] = Zii(zi,
-                               dz,
-                               frequency=frequency,
-                               background_conductivity=background_conductivity,
-                               casing_conductivity=casing_conductivity,
-                               outer_radius=outer_radius,
-                               inner_radius=inner_radius
-                              )
-            else:
-                Z[ii,jj] = Zij(zi,
-                               zj,
-                               dz,
-                               frequency=frequency,
-                               background_conductivity=background_conductivity,
-                               casing_conductivity=casing_conductivity,
-                               outer_radius=outer_radius,
-                               inner_radius=inner_radius
-                              )
-    return Z   
+    #TODO: skip half of Zij computations (symmetry)
+
+    # for ii in np.arange(num_segments):
+    #     zi = zs[ii]
+    #     for jj in np.arange(num_segments):
+    #         zj = zs[jj]
+    #         if ii==jj:
+    #             Z[ii,jj] = Zii(zi,
+    #                            dz,
+    #                            frequency=frequency,
+    #                            background_conductivity=background_conductivity,
+    #                            casing_conductivity=casing_conductivity,
+    #                            outer_radius=outer_radius,
+    #                            inner_radius=inner_radius
+    #                           )
+    #         else:
+    #             Z[ii,jj] = Zij(zi,
+    #                            zj,
+    #                            dz,
+    #                            frequency=frequency,
+    #                            background_conductivity=background_conductivity,
+    #                            casing_conductivity=casing_conductivity,
+    #                            outer_radius=outer_radius,
+    #                            inner_radius=inner_radius
+    #                           )
+    G = form_gamma_casing(frequency=frequency,
+                          background_conductivity=background_conductivity,
+                          outer_radius=outer_radius,
+                          inner_radius=inner_radius,
+                          casing_length=casing_length,
+                          num_segments=num_segments)
+    return (np.identity(num_segments)+0j)/casing_conductivity - G
 
 def HED_Ez(x,y,z,xp=0,yp=0,angle=0,conductivity=1,frequency=1,moment=1):
     '''
@@ -453,9 +464,9 @@ def VED_Ez(x,y,z,xp=0,yp=0,zp=0,conductivity=1,frequency=1,moment=1):
     '''
     k_squared = -1j*2*np.pi*frequency*mu0*conductivity
     drho = (x-xp)**2+(y-yp)**2
-    return _VED_Ez(drho,z,zp,k_squared,moment)
+    return moment*_VED_Ez(zp,z,drho,k_squared,conductivity)
 
-def _VED_Ez(drho,z,zp=0,k_squared,moment=1):
+def _VED_Ez(zp,z,drho,k_squared,conductivity):
     '''
     z component of electric field due to a vertical electric dipole in halfspace
     Mostly, helper function for VEB_Ez to avoid recomputing k)
@@ -466,11 +477,11 @@ def _VED_Ez(drho,z,zp=0,k_squared,moment=1):
     '''
     z_true = z-zp
     z_image = z+zp
-    Ez_true = _VED_Ez_wholespace(drho,z_true,k_squared)
-    Ez_image = _VED_Ez_wholespace(drho,z_image,k_squared)
-    return moment*(Ez_true-Ez_image)
+    Ez_true = _VED_Ez_wholespace(drho,z_true,k_squared,conductivity)
+    Ez_image = _VED_Ez_wholespace(drho,z_image,k_squared,conductivity)
+    return Ez_true-Ez_image
 
-def _VED_Ez_wholespace(drho,dz,k_squared,moment=1):
+def _VED_Ez_wholespace(drho,dz,k_squared,conductivity,moment=1):
     '''
     z component of electric field due to a vertical electric dipole in wholespace
     Mostly, helper function for VED_Ez (i.e. structured to avoid recomputing k)
@@ -496,31 +507,34 @@ def _VED_Ez_wholespace(drho,dz,k_squared,moment=1):
     return ez
 
 
-def VEB_Ez(x,y,z,xp=0,yp=0,zp=0,conductivity=1,frequency=1,moment=1):
+def VEB_Ez(x,y,z,xp=0,yp=0,zp1=0,zp2=0,conductivity=1,frequency=1,current=1):
     '''
     z component of electric field due to a vertical electric bipole
     x,y,z are location of observation, either as scalars or arrays
     xp,yp,zp are location of dipole
     Derived from Hohmann and Ward
+    Integrated using quadrature (scipy.integrate.quad)
     See Wait, 1952 for analytic integration in terms of 
     generalized cosine and sine integrals.
     '''
-    k_squared = -1j*2*np.pi*frequency*mu0*conductivity
-    r_squared = (x-xp)**2+(y-yp)**2+z**2
-    kr_squared = k_squared*r_squared
-    ikr = 1j*np.sqrt(kr_squared)
-    r = np.sqrt(r_squared)
-    # k = np.sqrt(k_squared)
+    from scipy.integrate import quad
+    def complex_quad(func, a, b, **kwargs):
+        def real_func(y,x,*rargs,**rkwargs):
+            return np.real(func(y,x,*rargs,**rkwargs))
+        def imag_func(y,x,*iargs,**ikwargs):
+            return np.imag(func(y,x,*iargs,**ikwargs))
+        real_integral = quad(real_func, a, b, **kwargs)
+        imag_integral = quad(imag_func, a, b, **kwargs)
+        return (real_integral[0] + 1j*imag_integral[0], real_integral[1:], imag_integral[1:])
 
-    # distance and depth scaling
-    ez = np.exp(-ikr)*z/r**5
-    # horizontal distance in the direction of the dipole
-    ez *= (x-xp)*np.cos(angle)+(y-yp)*np.sin(angle)
-    # unitless term in parenthesis
-    ez *= 3+3*ikr-kr_squared
-    # scaling factor
-    ez *= moment/2/np.pi/conductivity
-    return ez
+    k_squared = -1j*2*np.pi*frequency*mu0*conductivity
+    drho = (x-xp)**2+(y-yp)**2
+    ez = complex_quad(_VED_Ez, zp1, zp2,
+                      args=(z, drho, k_squared,conductivity),
+                      epsabs=1e-20,
+                      epsrel=1e-12,
+                      limit=200)
+    return current*ez
 
 def form_b_analytic(wire_path_x,
                     wire_path_y,
