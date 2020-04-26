@@ -21,6 +21,7 @@ TODO: Use a consistent sign convention
 '''
 
 import numpy as np
+from tqdm import tqdm
 
 mu0 = 4e-7*np.pi
 W140 = [-6.76671159511e-14,
@@ -367,6 +368,16 @@ Wab201 = np.array([[4.1185887075357082e-06,  1.5020099209519960e-03,  4.78278713
     [2.1448605423174356e+05, -2.0575286298055636e-10,  3.0748587523233524e-08],
     [2.4280161749832361e+05,  2.2414416956474645e-11, -3.5668195345476294e-09]])
 
+def complex_quad(func, a, b, **kwargs):
+    from scipy.integrate import quad
+    def real_func(y,x,*rargs,**rkwargs):
+        return np.real(func(y,x,*rargs,**rkwargs))
+    def imag_func(y,x,*iargs,**ikwargs):
+        return np.imag(func(y,x,*iargs,**ikwargs))
+    real_integral = quad(real_func, a, b, **kwargs)
+    imag_integral = quad(imag_func, a, b, **kwargs)
+    return (real_integral[0] + 1j*imag_integral[0], real_integral[1:], imag_integral[1:])
+
 
 def hankel_J1_140(function, r):
     '''
@@ -584,6 +595,61 @@ def form_gamma_casing(frequency=0.125,
                               )
     return np.conj(G)
 
+def form_gamma_casing_to_casing(x1,y1,
+                                casing_length_1,
+                                num_segments_1,
+                                x2,y2,
+                                casing_length_2,
+                                num_segments_2,
+                                frequency=0.125,
+                                background_conductivity=0.18,
+                                outer_radius_1=0.1095,
+                                inner_radius_1=0.1095-0.0134,
+                                outer_radius_2=0.1095,
+                                inner_radius_2=0.1095-0.0134,
+                                both_interactions=False,
+                                **kwargs):
+    '''
+    Form casing-to-casing part of interaction matrix
+    Returns num_segments_1 by num_segments_2 matrix
+    both_interactions: compute interaction terms for casing 1 > casing 2 and vice versa
+    Return two matrices: one for 1>2 and one for 2>1
+    '''
+    casing_area_1 = np.pi*(outer_radius_1**2-inner_radius_1**2)
+    casing_area_2 = np.pi*(outer_radius_2**2-inner_radius_2**2)
+    segment_length_1 = casing_length_1/num_segments_1
+    segment_length_2 = casing_length_2/num_segments_2
+    z1 = segment_length_1*(np.arange(num_segments_1)+0.5)
+    z2 = segment_length_2*(np.arange(num_segments_2)+0.5)
+    k_squared = -1j*2*np.pi*frequency*mu0*background_conductivity
+    drho_squared = (x2-x1)**2+(y2-y1)**2
+
+    A12 = 0j*np.zeros((num_segments_1,num_segments_2))
+    if both_interactions:
+        A21 = 0j*np.zeros((num_segments_2,num_segments_1))
+
+    for ii in tqdm(range(num_segments_1)):
+        zi = z1[ii]
+        for jj in range(num_segments_2):
+            zj = z2[jj]
+            A12[ii,jj] = -_VEB_Ez(zi,zj-segment_length_2/2,zj+segment_length_2/2,
+                                  drho_squared,k_squared,
+                                  conductivity=background_conductivity,
+                                  frequency=frequency
+                                 )
+            if both_interactions:
+                A21[ii,jj] = -_VEB_Ez(zj,zi-segment_length_1/2,zi+segment_length_1/2,
+                                      drho_squared,k_squared,
+                                      conductivity=background_conductivity,
+                                      frequency=frequency
+                                     )
+    A12 *= casing_area_2
+    if both_interactions:
+        A21 *= casing_area_1
+        return (A12,A21)
+    else:
+        return A12
+
 def form_A(frequency=0.125,
            background_conductivity=0.18,
            casing_conductivity=1.0e7,
@@ -699,14 +765,14 @@ def VED_Ez(x,y,z,xp=0,yp=0,zp=0,conductivity=1,frequency=1,moment=1):
     Uses e^(iwt) time dependence
     '''
     k_squared = -1j*2*np.pi*frequency*mu0*conductivity
-    drho = (x-xp)**2+(y-yp)**2
-    return moment*_VED_Ez(zp,z,drho,k_squared,conductivity)
+    drho_squared = (x-xp)**2+(y-yp)**2
+    return moment*_VED_Ez(zp,z,drho_squared,k_squared,conductivity)
 
-def _VED_Ez(zp,z,drho,k_squared,conductivity):
+def _VED_Ez(zp,z,drho_squared,k_squared,conductivity):
     '''
     z component of electric field due to a vertical electric dipole in halfspace
-    Mostly, helper function for VEB_Ez to avoid recomputing k)
-    drho is horizontal distance from observation to dipole, as scalar or array
+    Mostly, helper function for VED_Ez to avoid recomputing k)
+    drho_squared is square of horizontal distance from observation to dipole, as scalar or array
     z is vertical location of observation, either as scalar or array
     zp is vertical location of dipole
     Derived from Ward and Hohmann
@@ -714,21 +780,21 @@ def _VED_Ez(zp,z,drho,k_squared,conductivity):
     '''
     z_true = z-zp
     z_image = z+zp
-    Ez_true = _VED_Ez_wholespace(drho,z_true,k_squared,conductivity)
-    Ez_image = _VED_Ez_wholespace(drho,z_image,k_squared,conductivity)
+    Ez_true = _VED_Ez_wholespace(drho_squared,z_true,k_squared,conductivity)
+    Ez_image = _VED_Ez_wholespace(drho_squared,z_image,k_squared,conductivity)
     return Ez_true-Ez_image
 
-def _VED_Ez_wholespace(drho,dz,k_squared,conductivity,moment=1):
+def _VED_Ez_wholespace(drho_squared,dz,k_squared,conductivity,moment=1):
     '''
     z component of electric field due to a vertical electric dipole in wholespace
     Mostly, helper function for VED_Ez (i.e. structured to avoid recomputing k)
-    drho is horizontal distance from observation to dipole, as scalar or array
+    drho_squared is square of horizontal distance from observation to dipole, as scalar or array
     dz is vertical location from observation to dipole, either as scalar or array
     k_squared = -i omega mu_0 sigma
     Derived from Ward and Hohmann
     Uses e^(iwt) time dependence
     '''
-    r_squared = drho**2+dz**2
+    r_squared = drho_squared+dz**2
     kr_squared = k_squared*r_squared
     ikr = 1j*np.sqrt(kr_squared)
     r = np.sqrt(r_squared)
@@ -745,34 +811,62 @@ def _VED_Ez_wholespace(drho,dz,k_squared,conductivity,moment=1):
     return ez
 
 
-def VEB_Ez(x,y,z,xp=0,yp=0,zp1=0,zp2=0,conductivity=1,frequency=1,current=1):
+def VEB_Ez(x, y, z,
+           xp=0, yp=0, zp1=0, zp2=0,
+           conductivity=1,
+           frequency=1,
+           current=1,
+           epsabs=1e-20,
+           epsrel=1e-12,
+           limit=200,
+           **kwargs):
     '''
     z component of electric field due to a vertical electric bipole
     x,y,z are location of observation, either as scalars or arrays
-    xp,yp,zp are location of dipole
+    xp,yp,zp1,zp2 are locations of ends of bipole
     Derived from Hohmann and Ward
     Integrated using quadrature (scipy.integrate.quad)
     Uses e^(iwt) time dependence
     See Wait, 1952 for analytic integration in terms of 
     generalized cosine and sine integrals.
     '''
-    from scipy.integrate import quad
-    def complex_quad(func, a, b, **kwargs):
-        def real_func(y,x,*rargs,**rkwargs):
-            return np.real(func(y,x,*rargs,**rkwargs))
-        def imag_func(y,x,*iargs,**ikwargs):
-            return np.imag(func(y,x,*iargs,**ikwargs))
-        real_integral = quad(real_func, a, b, **kwargs)
-        imag_integral = quad(imag_func, a, b, **kwargs)
-        return (real_integral[0] + 1j*imag_integral[0], real_integral[1:], imag_integral[1:])
-
     k_squared = -1j*2*np.pi*frequency*mu0*conductivity
-    drho = (x-xp)**2+(y-yp)**2
+    drho_squared = (x-xp)**2+(y-yp)**2
+    return _VEB_Ez(z,zp1,zp2,drho_squared,k_squared,
+                   conductivity=conductivity,
+                   current=current,
+                   epsabs=epsabs,
+                   epsrel=epsrel,
+                   limit=limit,
+                   **kwargs)
+
+def _VEB_Ez(z,zp1,zp2,
+            drho_squared,
+            k_squared,
+            conductivity=1,
+            current=1,
+            epsabs=1e-20,
+            epsrel=1e-12,
+            limit=200,
+            **kwargs):
+    '''
+    z component of electric field due to a vertical electric bipole
+    Mostly, helper function for VEB_Ez (i.e. structured to avoid recomputing k and rho)
+    x,y,z are location of observation, either as scalars or arrays
+    xp,yp,zp1,zp2 are locations of ends of bipole
+    Derived from Hohmann and Ward
+    Integrated using quadrature (scipy.integrate.quad)
+    Uses e^(iwt) time dependence
+    See Wait, 1952 for analytic integration in terms of 
+    generalized cosine and sine integrals.
+    '''
     ez = complex_quad(_VED_Ez, zp1, zp2,
-                      args=(z, drho, k_squared,conductivity),
-                      epsabs=1e-20,
-                      epsrel=1e-12,
-                      limit=200)
+                      args=(z, drho_squared, k_squared, conductivity),
+                      epsabs=epsabs,
+                      epsrel=epsrel,
+                      limit=limit,
+                      **kwargs
+                     )[0]
     return current*ez
 
 def form_b_analytic(wire_path_x,
