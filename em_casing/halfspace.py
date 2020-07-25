@@ -10,7 +10,9 @@ fij
 Zii
 Zij
 form_gamma_casing
+form_gamma_casing_to_casing
 form_A
+form_A_many_casings
 HED_Ez
 HEB_Ez
 form_b_analytic
@@ -610,10 +612,18 @@ def form_gamma_casing_to_casing(x1,y1,
                                 both_interactions=False,
                                 **kwargs):
     '''
-    Form casing-to-casing part of interaction matrix
-    Returns num_segments_1 by num_segments_2 matrix
-    both_interactions: compute interaction terms for casing 1 > casing 2 and vice versa
-    Return two matrices: one for 1>2 and one for 2>1
+    Form casing-to-casing part of integrated greens function (Gamma)
+        Interaction matrix A = 1/sigma_c * I - Gamma
+        So, A12 = -G12, and A21 =  -G21
+    Returns num_segments_1 by num_segments_2 matrix Gamma
+
+    both_interactions: compute interaction terms for casing 1 -> casing 2 and vice versa,
+        and return two matrices, one for 1->2 (G12) and one for 2->1 (G21).
+        G21 is a num_segments_2 by num_segments_1 matrix
+
+    NOTE: if both casings have segments of equal length, G12 = G21.T
+        Thus, both_interactions is only needed if 
+        casing_length_1/num_segments_1 != casing_length_2/num_segments_2 
     '''
     casing_area_1 = np.pi*(outer_radius_1**2-inner_radius_1**2)
     casing_area_2 = np.pi*(outer_radius_2**2-inner_radius_2**2)
@@ -624,31 +634,29 @@ def form_gamma_casing_to_casing(x1,y1,
     k_squared = -1j*2*np.pi*frequency*mu0*background_conductivity
     drho_squared = (x2-x1)**2+(y2-y1)**2
 
-    A12 = 0j*np.zeros((num_segments_1,num_segments_2))
+    G12 = 0j*np.zeros((num_segments_1,num_segments_2))
     if both_interactions:
-        A21 = 0j*np.zeros((num_segments_2,num_segments_1))
+        G21 = 0j*np.zeros((num_segments_2,num_segments_1))
 
     for ii in tqdm(range(num_segments_1)):
         zi = z1[ii]
         for jj in range(num_segments_2):
             zj = z2[jj]
-            A12[ii,jj] = -_VEB_Ez(zi,zj-segment_length_2/2,zj+segment_length_2/2,
+            G12[ii,jj] = _VEB_Ez(zi,zj-segment_length_2/2,zj+segment_length_2/2,
                                   drho_squared,k_squared,
-                                  conductivity=background_conductivity,
-                                  frequency=frequency
+                                  conductivity=background_conductivity
                                  )
             if both_interactions:
-                A21[ii,jj] = -_VEB_Ez(zj,zi-segment_length_1/2,zi+segment_length_1/2,
+                G21[jj,ii] = _VEB_Ez(zj,zi-segment_length_1/2,zi+segment_length_1/2,
                                       drho_squared,k_squared,
-                                      conductivity=background_conductivity,
-                                      frequency=frequency
+                                      conductivity=background_conductivity
                                      )
-    A12 *= casing_area_2
+    G12 *= casing_area_2
     if both_interactions:
-        A21 *= casing_area_1
-        return (A12,A21)
+        G21 *= casing_area_1
+        return (G12,G21)
     else:
-        return A12
+        return G12
 
 def form_A(frequency=0.125,
            background_conductivity=0.18,
@@ -702,6 +710,119 @@ def form_A(frequency=0.125,
                           casing_length=casing_length,
                           num_segments=num_segments)
     return (np.identity(num_segments)+0j)/casing_conductivity - G
+
+def form_A_many_casings(xs,
+                        ys,
+                        frequency=0.125,
+                        background_conductivities=0.18,
+                        casing_lengths=1365,
+                        nums_segments=280,
+                        casing_conductivities=1.0e7,
+                        outer_radii=0.1095,
+                        inner_radii=0.1095-0.0134,
+                        **kwargs):
+    '''
+    Form coefficient matrix to solve for casing current densities
+    for many casings
+    Follows Tang et al., 2015
+    Uses e^(iwt) time dependence
+    xs and ys are list-likes of x/y locations of casings
+    frequency, background_conductivity are single values
+    All other arguments can be single values or list-likes
+    If single values, they are applied to all casings
+    If list-likes, they must be of the same length as xs and ys
+
+    kwargs are unused
+    '''
+
+    # Parse arguments
+    num_casings = len(xs)
+    assert (num_casings==len(ys)),'xs and ys must be of the same length'
+    # check if arguments are list-like
+    list_like = {}
+    arguments = {'xs': xs,
+                 'ys': ys,
+                 'background_conductivities': background_conductivities,
+                 'casing_lengths': casing_lengths,
+                 'nums_segments': nums_segments,
+                 'casing_conductivities': casing_conductivities, 
+                 'outer_radii': outer_radii,
+                 'inner_radii': inner_radii
+                }
+    # ensure that all dictionary values are lists of length num_casings,
+    # see which arguments were passed in as scalars
+    for key, value in arguments.items():
+        try:
+            # TypeError if value is not a list
+            num_elements = len(value)
+            # AssertionError if list is not of correct length
+            assert num_elements==num_casings, '{} must either be a scalar or have the same length as xs and ys'.format(key)
+            list_like[key] = True
+        except TypeError:
+            # value is a scalar
+            list_like[key] = False
+            # make it a list of num_casings elements
+            arguments[key] = [value]*num_casings
+
+    # Create A and fill entries
+    total_segments = sum(arguments['nums_segments'])
+    A_full = 0j*np.zeros((total_segments,total_segments))
+
+    # If all casings are identical, aside from x and y locations
+    properties_list_like = [is_list for key, is_list in list_like.items() if not key in ['xs', 'ys']]
+    if not any(properties_list_like):
+        # only compute inter-casing matrices one-way, and reuse.
+        # form diagonal block intra-casing matrix (only need one)
+        A_diag = form_A(frequency=frequency,
+                        background_conductivity=background_conductivities,
+                        casing_conductivity=casing_conductivities,
+                        outer_radius=outer_radii,
+                        inner_radius=inner_radii,
+                        casing_length=casing_lengths,
+                        num_segments=nums_segments,
+                        **kwargs)
+        for i1, (x1, y1, background_conductivity, casing_length, num_segments,
+                 casing_conductivity, outer_radius, inner_radius
+                ) in enumerate(zip(*arguments.values())):
+            i1_start = i1*num_segments
+            i1_end = (i1+1)*num_segments
+            A_full[i1_start:i1_end, i1_start:i1_end] = A_diag
+            # form all needed inter-casing interaction matrices
+            for i2 in range(i1+1, num_casings):
+                x2 = xs[i2]
+                y2 = ys[i2]
+                i2_start = i2*num_segments
+                i2_end = (i2+1)*num_segments
+                A_full[i1_start:i1_end,i2_start:i2_end] = -form_gamma_casing_to_casing(
+                    x1,
+                    y1,
+                    casing_length,
+                    num_segments,
+                    x2,
+                    y2,
+                    casing_length,
+                    num_segments,
+                    frequency=frequency,
+                    background_conductivity=background_conductivity,
+                    outer_radius_1=outer_radius,
+                    inner_radius_1=inner_radius,
+                    outer_radius_2=outer_radius,
+                    inner_radius_2=inner_radius,
+                    both_interactions=False,
+                    **kwargs)
+                # exploit symmetry
+                A_full[i2_start:i2_end,i1_start:i1_end] = A_full.T[i2_start:i2_end,i1_start:i1_end]
+    else:
+        raise NotImplementedError('casings of different sizes or properties has not yet been implemented')
+        '''
+        # must compute inter-casing matrices both ways
+        if list_like['background_conductivities']:
+            # must also call casing-to-casing for each background conductivity
+        else:
+            # can use both 12 and 21 matrices from casing-to-casing
+        '''
+    return A_full
+
 
 def HED_Ez(x,y,z,xp=0,yp=0,angle=0,conductivity=1,frequency=1,moment=1):
     '''
