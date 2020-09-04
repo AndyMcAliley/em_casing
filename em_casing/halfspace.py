@@ -892,7 +892,7 @@ def VED_Ez(x,y,z,xp=0,yp=0,zp=0,conductivity=1,frequency=1,moment=1):
 def _VED_Ez(zp,z,drho_squared,k_squared,conductivity):
     '''
     z component of electric field due to a vertical electric dipole in halfspace
-    Mostly, helper function for VED_Ez to avoid recomputing k)
+    Mostly, helper function for VED_Ez to avoid recomputing k
     drho_squared is square of horizontal distance from observation to dipole, as scalar or array
     z is vertical location of observation, either as scalar or array
     zp is vertical location of dipole
@@ -1032,4 +1032,79 @@ def form_b(*args,method='analytic',**kwargs):
         return form_b_analytic(*args,**kwargs)
     else:
         raise ValueError('method '+method+' not recognized')
+
+def form_b_many_casings(wire_path_x,
+                        wire_path_y,
+                        casings_x,
+                        casings_y,
+                        wire_current=1,
+                        frequency=0.125,
+                        background_conductivities=0.18,
+                        casing_lengths=1365,
+                        nums_segments=280,
+                        **kwargs):
+    '''
+    Form the RHS vector to solve for casing currents for many casings
+    Uses e^(iwt) time dependence
+    
+    wire_path: A numpy array of x and y positions
+        x in column 1, y in column 2
+        origin at casing
+        These are nodes, so there must be k+1 elements where k is # wire dipoles
+    
+    NOTE: the analytic solution for Ez only uses the grounding points
+    This method is untested.
+    '''
+
+    # Parse arguments
+    num_casings = len(casings_x)
+    assert (num_casings==len(casings_y)),'casings_x and casings_y must be of the same length'
+    # check if arguments are list-like
+    list_like = {}
+    arguments = {'casings_x': casings_x,
+                 'casings_y': casings_y,
+                 'background_conductivities': background_conductivities,
+                 'casing_lengths': casing_lengths,
+                 'nums_segments': nums_segments
+                }
+    # ensure that all dictionary values are lists of length num_casings,
+    # see which arguments were passed in as scalars
+    for key, value in arguments.items():
+        try:
+            # TypeError if value is not a list
+            num_elements = len(value)
+            # AssertionError if list is not of correct length
+            assert num_elements==num_casings, '{} must either be a scalar or have the same length as casings_x and casings_y'.format(key)
+            list_like[key] = True
+        except TypeError:
+            # value is a scalar
+            list_like[key] = False
+            # make it a list of num_casings elements
+            arguments[key] = [value]*num_casings
+
+    # Create b and fill entries
+    # total_segments = sum(arguments['nums_segments'])
+    # b_full = 0j*np.zeros((total_segments,total_segments))
+    b_full = np.array([])
+
+    # If all background_conductivities are identical
+    # properties_list_like = [is_list for key, is_list in list_like.items() if key in ['background_conductivities']]
+
+    for i1, (casing_x, casing_y, background_conductivity, casing_length, num_segments
+            ) in enumerate(zip(*arguments.values())):
+        dz = casing_length/num_segments
+        zs = dz*(np.arange(num_segments)+0.5)
+        xs = np.array([casing_x]*num_segments)
+        ys = np.array([casing_y]*num_segments)
+        b_casing = HEB_Ez(xs,ys,zs,
+                          xp1=wire_path_x[0],
+                          yp1=wire_path_y[0],
+                          xp2=wire_path_x[-1],
+                          yp2=wire_path_y[-1],
+                          current=wire_current,
+                          conductivity=background_conductivity,
+                          frequency=frequency)
+        b_full = np.append(b_full, b_casing)
+
+    return b_full
 
